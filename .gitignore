@@ -1,0 +1,28 @@
+# Secrets — NEVER commit
+.env
+credentials.json
+token.json
+*.key
+*.pem
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Temp
+.tmp/
+*.log
+
+# Playwright MCP browser profile
+.playwright-mcp/
