@@ -143,11 +143,10 @@ def format_report(report_by_dept, date_str):
             for t in data["completed"]:
                 name = escape_html(t["name"])
                 lst = escape_html(t["list"])
-                who = escape_html(t["assignees"])
                 if t["url"]:
-                    lines.append(f"• <a href=\"{t['url']}\">{name}</a> — {lst} ({who})")
+                    lines.append(f"• <a href=\"{t['url']}\">{name}</a> — {lst}")
                 else:
-                    lines.append(f"• {name} — {lst} ({who})")
+                    lines.append(f"• {name} — {lst}")
         else:
             lines.append("  <i>None</i>")
 
@@ -157,14 +156,10 @@ def format_report(report_by_dept, date_str):
             for t in data["in_progress"][:20]:
                 name = escape_html(t["name"])
                 lst = escape_html(t["list"])
-                who = escape_html(t["assignees"])
-                status = escape_html(t["status"])
                 if t["url"]:
-                    lines.append(
-                        f"• <a href=\"{t['url']}\">{name}</a> — {status} — {lst} ({who})"
-                    )
+                    lines.append(f"• <a href=\"{t['url']}\">{name}</a> — {lst}")
                 else:
-                    lines.append(f"• {name} — {status} — {lst} ({who})")
+                    lines.append(f"• {name} — {lst}")
             if len(data["in_progress"]) > 20:
                 lines.append(f"  <i>… +{len(data['in_progress']) - 20} more</i>")
         else:
