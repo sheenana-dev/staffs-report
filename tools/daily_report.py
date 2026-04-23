@@ -33,6 +33,7 @@ SPACES = {
     "Marketing": "90166460468",
     "Design": "90166460460",
     "Sales": "90166460463",
+    "CS": "90166857552",
 }
 
 
@@ -134,7 +135,7 @@ def escape_html(s):
 
 def format_report(report_by_dept, date_str):
     lines = [f"<b>📊 Daily Report — {date_str}</b>", ""]
-    for dept in ["Marketing", "Design", "Sales"]:
+    for dept in ["Marketing", "Design", "Sales", "CS"]:
         data = report_by_dept[dept]
         lines.append(f"<b>━━━ {dept} ━━━</b>")
 
