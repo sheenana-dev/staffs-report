@@ -142,11 +142,10 @@ def format_report(report_by_dept, date_str):
         if data["completed"]:
             for t in data["completed"]:
                 name = escape_html(t["name"])
-                lst = escape_html(t["list"])
                 if t["url"]:
-                    lines.append(f"• <a href=\"{t['url']}\">{name}</a> — {lst}")
+                    lines.append(f"• <a href=\"{t['url']}\">{name}</a>")
                 else:
-                    lines.append(f"• {name} — {lst}")
+                    lines.append(f"• {name}")
         else:
             lines.append("  <i>None</i>")
 
@@ -155,11 +154,10 @@ def format_report(report_by_dept, date_str):
         if data["in_progress"]:
             for t in data["in_progress"][:20]:
                 name = escape_html(t["name"])
-                lst = escape_html(t["list"])
                 if t["url"]:
-                    lines.append(f"• <a href=\"{t['url']}\">{name}</a> — {lst}")
+                    lines.append(f"• <a href=\"{t['url']}\">{name}</a>")
                 else:
-                    lines.append(f"• {name} — {lst}")
+                    lines.append(f"• {name}")
             if len(data["in_progress"]) > 20:
                 lines.append(f"  <i>… +{len(data['in_progress']) - 20} more</i>")
         else:
