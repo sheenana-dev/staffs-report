@@ -134,12 +134,12 @@ def escape_html(s):
 
 
 def format_report(report_by_dept, date_str):
-    lines = [f"<b>📊 Daily Report — {date_str}</b>", ""]
+    lines = [f"<b>Daily Report — {date_str}</b>", ""]
     for dept in ["Marketing", "Design", "Sales", "CS"]:
         data = report_by_dept[dept]
-        lines.append(f"<b>━━━ {dept} ━━━</b>")
+        lines.append(f"<b>{dept}</b>")
 
-        lines.append(f"<b>✅ Completed today ({len(data['completed'])})</b>")
+        lines.append(f"Completed ({len(data['completed'])})")
         if data["completed"]:
             for t in data["completed"]:
                 name = escape_html(t["name"])
@@ -150,8 +150,7 @@ def format_report(report_by_dept, date_str):
         else:
             lines.append("  <i>None</i>")
 
-        lines.append("")
-        lines.append(f"<b>🔄 In progress ({len(data['in_progress'])})</b>")
+        lines.append(f"In progress ({len(data['in_progress'])})")
         if data["in_progress"]:
             for t in data["in_progress"][:20]:
                 name = escape_html(t["name"])
@@ -172,7 +171,7 @@ def send_telegram(text):
     url = f"{TELEGRAM_BASE}/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     chunks = []
     remaining = text
-    limit = 4000
+    limit = 4096
     while len(remaining) > limit:
         split_at = remaining.rfind("\n", 0, limit)
         if split_at == -1:
