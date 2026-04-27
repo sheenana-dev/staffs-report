@@ -2,9 +2,12 @@ name: Daily Department Report
 
 on:
   schedule:
-    # 7:00 PM Philippine Time (UTC+8) = 11:00 AM UTC
-    - cron: "0 11 * * *"
+    # 7:00 PM Philippine Time (UTC+8) = 11:00 AM UTC, Mon-Fri only
+    - cron: "0 11 * * 1-5"
   workflow_dispatch: {}  # manual trigger from GitHub UI
+
+permissions:
+  contents: write  # needed to push .last-run-date marker
 
 jobs:
   send-report:
@@ -12,17 +15,46 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Compute today (PHT)
+        id: today
+        run: |
+          today=$(TZ=Asia/Manila date +%Y-%m-%d)
+          echo "date=$today" >> "$GITHUB_OUTPUT"
+
+      - name: Check if already ran today
+        id: check
+        run: |
+          if [[ -f .last-run-date && "$(cat .last-run-date)" == "${{ steps.today.outputs.date }}" ]]; then
+            echo "Already ran on ${{ steps.today.outputs.date }} — skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Set up Python
+        if: steps.check.outputs.skip == 'false'
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
       - name: Install dependencies
+        if: steps.check.outputs.skip == 'false'
         run: pip install python-dotenv
 
       - name: Send daily report
+        if: steps.check.outputs.skip == 'false'
         env:
           CLICKUP_API_KEY: ${{ secrets.CLICKUP_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python3 tools/daily_report.py
+
+      - name: Mark run complete
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          echo "${{ steps.today.outputs.date }}" > .last-run-date
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add .last-run-date
+          git commit -m "chore: mark daily report run for ${{ steps.today.outputs.date }}"
+          git push
