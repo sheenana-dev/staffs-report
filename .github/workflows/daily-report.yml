@@ -2,8 +2,9 @@ name: Daily Department Report
 
 on:
   schedule:
-    # 7:00 PM Philippine Time (UTC+8) = 11:00 AM UTC, Mon-Fri only
-    - cron: "0 11 * * 1-5"
+    # 8:00 PM Philippine Time (UTC+8) = 12:00 PM UTC, Mon-Fri only
+    # Note: GitHub Actions cron is best-effort and often fires 1-3h late.
+    - cron: "0 12 * * 1-5"
   workflow_dispatch: {}  # manual trigger from GitHub UI
 
 permissions:
