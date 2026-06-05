@@ -72,9 +72,21 @@ def get_tasks_in_list(list_id):
     return tasks
 
 
-def pht_today_bounds():
-    now_pht = datetime.now(PHT)
-    start = now_pht.replace(hour=0, minute=0, second=0, microsecond=0)
+def report_anchor():
+    """Midnight PHT of the report day.
+
+    Uses REPORT_DATE (YYYY-MM-DD) when set by the workflow — it is noon-anchored
+    so a late-firing cron that slips past midnight still reports the correct day.
+    Falls back to the current PHT day for local/manual runs.
+    """
+    override = os.getenv("REPORT_DATE")
+    if override:
+        return datetime.strptime(override, "%Y-%m-%d").replace(tzinfo=PHT)
+    return datetime.now(PHT).replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def pht_today_bounds(anchor):
+    start = anchor.replace(hour=0, minute=0, second=0, microsecond=0)
     end = start + timedelta(days=1)
     return int(start.timestamp() * 1000), int(end.timestamp() * 1000)
 
@@ -208,8 +220,9 @@ def main():
         print(f"ERROR: missing env vars: {', '.join(missing)}")
         sys.exit(1)
 
-    today_start_ms, today_end_ms = pht_today_bounds()
-    today_str = datetime.now(PHT).strftime("%a, %b %d, %Y")
+    anchor = report_anchor()
+    today_start_ms, today_end_ms = pht_today_bounds(anchor)
+    today_str = anchor.strftime("%a, %b %d, %Y")
 
     report = {}
     for dept, space_id in SPACES.items():

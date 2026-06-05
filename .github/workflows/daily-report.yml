@@ -16,10 +16,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Compute today (PHT)
+      - name: Compute report day (PHT, noon-anchored)
         id: today
         run: |
-          today=$(TZ=Asia/Manila date +%Y-%m-%d)
+          # Anchor each run to a "report day" at noon PHT (now - 12h). Reports only
+          # fire in the evening (~8 PM-1 AM PHT), so noon sits in a dead zone where
+          # nothing runs — a late cron that slips past midnight is still attributed
+          # to the correct day instead of stealing the next day's slot.
+          today=$(TZ=Asia/Manila date -d '-12 hours' +%Y-%m-%d)
           echo "date=$today" >> "$GITHUB_OUTPUT"
 
       - name: Check if already ran today
@@ -48,6 +52,7 @@ jobs:
           CLICKUP_API_KEY: ${{ secrets.CLICKUP_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          REPORT_DATE: ${{ steps.today.outputs.date }}  # noon-anchored day; keeps content on the right day
         run: python3 tools/daily_report.py
 
       - name: Mark run complete
