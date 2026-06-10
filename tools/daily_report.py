@@ -107,6 +107,13 @@ def classify(task, today_start_ms, today_end_ms):
     return None
 
 
+def clean_name(name):
+    # Collapse all whitespace (incl. embedded newlines from ClickUp) into single
+    # spaces. Newlines inside a name would let the 4096-char chunk splitter cut
+    # mid-<a> tag, producing malformed HTML that Telegram rejects with HTTP 400.
+    return " ".join((name or "").split()) or "(unnamed)"
+
+
 def collect_department_report(dept_name, space_id, today_start_ms, today_end_ms):
     completed = []
     in_progress = []
@@ -124,7 +131,7 @@ def collect_department_report(dept_name, space_id, today_start_ms, today_end_ms)
                 a.get("username", "?") for a in task.get("assignees", [])
             ) or "unassigned"
             entry = {
-                "name": task.get("name", "(unnamed)"),
+                "name": clean_name(task.get("name")),
                 "url": task.get("url", ""),
                 "status": (task.get("status") or {}).get("status", ""),
                 "list": lst["name"],
