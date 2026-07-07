@@ -30,11 +30,32 @@ TELEGRAM_BASE = "https://api.telegram.org"
 PHT = timezone(timedelta(hours=8))
 
 SPACES = {
+    "IT": "90166460444",
     "Marketing": "90166460468",
     "Design": "90166460460",
     "Sales": "90166460463",
     "CS": "90166857552",
 }
+
+# Sales is reported per-salesperson, split by ClickUp list: each entry maps a list
+# name (exactly as it appears in ClickUp) to the section label shown in the report.
+# These are dedicated per-person lists in the Sales space; the Onboarding and Account
+# Management lists are intentionally not shown. Run tools/ensure_sales_lists.py to
+# create any of these that don't exist yet. To add a person, add a row here.
+SALES_LISTS = [
+    {"list": "Sales Cei", "label": "Madam Cei"},
+    {"list": "Sales Sarah", "label": "Sarah"},
+]
+
+# Within each salesperson's list, the report surfaces ONLY these ClickUp statuses,
+# in display order — everything else in the list is ignored. Matching is
+# case-insensitive on the exact status name; edit these if ClickUp spells them
+# differently. "closed_today": True limits a status to tasks closed today (a daily
+# win); False shows every task currently in that status (a pipeline snapshot).
+SALES_STATUSES = [
+    {"status": "Contacted", "closed_today": False},
+    {"status": "Closed Won", "closed_today": False},
+]
 
 
 def clickup_get(endpoint):
@@ -114,11 +135,23 @@ def clean_name(name):
     return " ".join((name or "").split()) or "(unnamed)"
 
 
+def task_entry(task, list_name):
+    assignees = ", ".join(
+        a.get("username", "?") for a in task.get("assignees", [])
+    ) or "unassigned"
+    return {
+        "name": clean_name(task.get("name")),
+        "url": task.get("url", ""),
+        "status": (task.get("status") or {}).get("status", ""),
+        "list": list_name,
+        "assignees": assignees,
+    }
+
+
 def collect_department_report(dept_name, space_id, today_start_ms, today_end_ms):
     completed = []
     in_progress = []
-    lists = get_lists_in_space(space_id)
-    for lst in lists:
+    for lst in get_lists_in_space(space_id):
         try:
             tasks = get_tasks_in_list(lst["id"])
         except urllib.error.HTTPError:
@@ -127,16 +160,7 @@ def collect_department_report(dept_name, space_id, today_start_ms, today_end_ms)
             bucket = classify(task, today_start_ms, today_end_ms)
             if bucket is None:
                 continue
-            assignees = ", ".join(
-                a.get("username", "?") for a in task.get("assignees", [])
-            ) or "unassigned"
-            entry = {
-                "name": clean_name(task.get("name")),
-                "url": task.get("url", ""),
-                "status": (task.get("status") or {}).get("status", ""),
-                "list": lst["name"],
-                "assignees": assignees,
-            }
+            entry = task_entry(task, lst["name"])
             if bucket == "completed_today":
                 completed.append(entry)
             else:
@@ -152,37 +176,102 @@ def escape_html(s):
     )
 
 
-def format_report(report_by_dept, date_str):
+def sales_status_match(task, status_cfg, today_start_ms, today_end_ms):
+    name = ((task.get("status") or {}).get("status") or "").strip().lower()
+    if name != status_cfg["status"].strip().lower():
+        return False
+    if not status_cfg.get("closed_today"):
+        return True
+    try:
+        closed_ms = int(task.get("date_closed"))
+    except (ValueError, TypeError):
+        return False
+    return today_start_ms <= closed_ms < today_end_ms
+
+
+def collect_sales_sections(space_id, today_start_ms, today_end_ms):
+    """One section per salesperson (matched by ClickUp list name), each showing
+    only the configured statuses (Contacted, Closed Won) as separate buckets.
+    Unmapped lists (Onboarding, Account Management) and other statuses are excluded."""
+    def norm(s):
+        return (s or "").strip().lower()
+
+    label_for = {norm(m["list"]): m["label"] for m in SALES_LISTS}
+    buckets = {
+        m["label"]: {s["status"]: [] for s in SALES_STATUSES} for m in SALES_LISTS
+    }
+    for lst in get_lists_in_space(space_id):
+        label = label_for.get(norm(lst["name"]))
+        if label is None:
+            continue
+        try:
+            tasks = get_tasks_in_list(lst["id"])
+        except urllib.error.HTTPError:
+            continue
+        for task in tasks:
+            for status_cfg in SALES_STATUSES:
+                if sales_status_match(task, status_cfg, today_start_ms, today_end_ms):
+                    buckets[label][status_cfg["status"]].append(
+                        task_entry(task, lst["name"])
+                    )
+                    break
+    return [
+        (
+            f"Sales — {m['label']}",
+            [
+                {
+                    "label": s["status"],
+                    "entries": buckets[m["label"]][s["status"]],
+                    "cap": 20,
+                }
+                for s in SALES_STATUSES
+            ],
+        )
+        for m in SALES_LISTS
+    ]
+
+
+def render_task_lines(entries, cap=None):
+    lines = []
+    for t in (entries if cap is None else entries[:cap]):
+        name = escape_html(t["name"])
+        lines.append(f"• <a href=\"{t['url']}\">{name}</a>" if t["url"] else f"• {name}")
+    if cap is not None and len(entries) > cap:
+        lines.append(f"  <i>… +{len(entries) - cap} more</i>")
+    return lines
+
+
+def render_section(title, buckets):
+    lines = [f"<b>{title}</b>"]
+    for bucket in buckets:
+        entries = bucket["entries"]
+        lines.append(f"{bucket['label']} ({len(entries)})")
+        lines += render_task_lines(entries, cap=bucket.get("cap")) if entries else ["  <i>None</i>"]
+    lines.append("")
+    return lines
+
+
+def standard_buckets(data):
+    return [
+        {"label": "Completed", "entries": data["completed"], "cap": None},
+        {"label": "In progress", "entries": data["in_progress"], "cap": 20},
+    ]
+
+
+def build_sections(report_by_dept, sales_sections):
+    sections = [
+        ("Marketing", standard_buckets(report_by_dept["Marketing"])),
+        ("Design", standard_buckets(report_by_dept["Design"])),
+    ]
+    sections += sales_sections
+    sections.append(("CS", standard_buckets(report_by_dept["CS"])))
+    return sections
+
+
+def format_report(report_by_dept, sales_sections, date_str):
     lines = [f"<b>Daily Report — {date_str}</b>", ""]
-    for dept in ["Marketing", "Design", "Sales", "CS"]:
-        data = report_by_dept[dept]
-        lines.append(f"<b>{dept}</b>")
-
-        lines.append(f"Completed ({len(data['completed'])})")
-        if data["completed"]:
-            for t in data["completed"]:
-                name = escape_html(t["name"])
-                if t["url"]:
-                    lines.append(f"• <a href=\"{t['url']}\">{name}</a>")
-                else:
-                    lines.append(f"• {name}")
-        else:
-            lines.append("  <i>None</i>")
-
-        lines.append(f"In progress ({len(data['in_progress'])})")
-        if data["in_progress"]:
-            for t in data["in_progress"][:20]:
-                name = escape_html(t["name"])
-                if t["url"]:
-                    lines.append(f"• <a href=\"{t['url']}\">{name}</a>")
-                else:
-                    lines.append(f"• {name}")
-            if len(data["in_progress"]) > 20:
-                lines.append(f"  <i>… +{len(data['in_progress']) - 20} more</i>")
-        else:
-            lines.append("  <i>None</i>")
-
-        lines.append("")
+    for title, buckets in build_sections(report_by_dept, sales_sections):
+        lines += render_section(title, buckets)
     return "\n".join(lines).strip()
 
 
@@ -218,11 +307,13 @@ def send_telegram(text):
 def main():
     dry_run = "--dry-run" in sys.argv
 
-    missing = [k for k, v in {
-        "CLICKUP_API_KEY": CLICKUP_API_KEY,
-        "TELEGRAM_BOT_TOKEN": TELEGRAM_BOT_TOKEN,
-        "TELEGRAM_CHAT_ID": TELEGRAM_CHAT_ID,
-    }.items() if not v]
+    # A dry-run only fetches from ClickUp and prints — it never sends, so it does
+    # not need the Telegram credentials.
+    required = {"CLICKUP_API_KEY": CLICKUP_API_KEY}
+    if not dry_run:
+        required["TELEGRAM_BOT_TOKEN"] = TELEGRAM_BOT_TOKEN
+        required["TELEGRAM_CHAT_ID"] = TELEGRAM_CHAT_ID
+    missing = [k for k, v in required.items() if not v]
     if missing:
         print(f"ERROR: missing env vars: {', '.join(missing)}")
         sys.exit(1)
@@ -233,12 +324,19 @@ def main():
 
     report = {}
     for dept, space_id in SPACES.items():
+        if dept == "Sales":
+            continue  # collected separately, per salesperson + status
         print(f"Collecting {dept} ...")
         report[dept] = collect_department_report(
             dept, space_id, today_start_ms, today_end_ms
         )
 
-    text = format_report(report, today_str)
+    print("Collecting Sales (per salesperson) ...")
+    sales_sections = collect_sales_sections(
+        SPACES["Sales"], today_start_ms, today_end_ms
+    )
+
+    text = format_report(report, sales_sections, today_str)
     print("\n" + "=" * 60)
     print(text)
     print("=" * 60 + "\n")
