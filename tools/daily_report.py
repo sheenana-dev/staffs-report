@@ -49,12 +49,15 @@ SALES_LISTS = [
 
 # Within each salesperson's list, the report surfaces ONLY these ClickUp statuses,
 # in display order — everything else in the list is ignored. Matching is
-# case-insensitive on the exact status name; edit these if ClickUp spells them
-# differently. "closed_today": True limits a status to tasks closed today (a daily
-# win); False shows every task currently in that status (a pipeline snapshot).
+# case-insensitive on the exact status name. Each status is filtered to the report
+# day via `date_field`: only tasks whose that-timestamp falls on the report date are
+# shown (the day's activity, not the whole standing pipeline). Set date_field to None
+# to show every task currently in the status regardless of date.
+#   Contacted  -> date_updated: the lead was worked/moved that day
+#   Closed Won -> date_closed:  the deal was closed that day
 SALES_STATUSES = [
-    {"status": "Contacted", "closed_today": False},
-    {"status": "Closed Won", "closed_today": False},
+    {"status": "Contacted", "date_field": "date_updated"},
+    {"status": "Closed Won", "date_field": "date_closed"},
 ]
 
 
@@ -180,13 +183,14 @@ def sales_status_match(task, status_cfg, today_start_ms, today_end_ms):
     name = ((task.get("status") or {}).get("status") or "").strip().lower()
     if name != status_cfg["status"].strip().lower():
         return False
-    if not status_cfg.get("closed_today"):
-        return True
+    date_field = status_cfg.get("date_field")
+    if not date_field:
+        return True  # no date filter — show all tasks currently in this status
     try:
-        closed_ms = int(task.get("date_closed"))
+        ts = int(task.get(date_field))
     except (ValueError, TypeError):
         return False
-    return today_start_ms <= closed_ms < today_end_ms
+    return today_start_ms <= ts < today_end_ms
 
 
 def collect_sales_sections(space_id, today_start_ms, today_end_ms):
