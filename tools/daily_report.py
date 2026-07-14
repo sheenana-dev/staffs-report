@@ -13,6 +13,7 @@ Usage:
 import os
 import sys
 import json
+import re
 import urllib.request
 import urllib.error
 from datetime import datetime, timezone, timedelta
@@ -279,11 +280,9 @@ def format_report(report_by_dept, sales_sections, date_str):
     return "\n".join(lines).strip()
 
 
-def send_telegram(text):
-    url = f"{TELEGRAM_BASE}/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+def chunk_message(text, limit=4096):
     chunks = []
     remaining = text
-    limit = 4096
     while len(remaining) > limit:
         split_at = remaining.rfind("\n", 0, limit)
         if split_at == -1:
@@ -292,20 +291,55 @@ def send_telegram(text):
         remaining = remaining[split_at:].lstrip("\n")
     if remaining:
         chunks.append(remaining)
+    return chunks
 
-    for chunk in chunks:
-        payload = json.dumps({
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": chunk,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True,
-        }).encode()
-        req = urllib.request.Request(url, data=payload, method="POST")
-        req.add_header("Content-Type", "application/json")
+
+def html_to_plain(html):
+    """Best-effort plain-text version of a chunk: links collapse to their text,
+    bold/italic markers drop, and entities unescape. Used as a fallback when
+    Telegram rejects the HTML so the report still gets delivered."""
+    text = re.sub(r'<a\s+href="[^"]*">(.*?)</a>', r"\1", html)
+    text = re.sub(r"</?[bi]>", "", text)
+    return text.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+
+
+def telegram_post(url, chunk, parse_mode):
+    """POST one chunk. Returns None on success, or Telegram's error description
+    (read from the response body — that's the actual reason for a 400)."""
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": chunk,
+        "disable_web_page_preview": True,
+    }
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
+    req = urllib.request.Request(url, data=json.dumps(payload).encode(), method="POST")
+    req.add_header("Content-Type", "application/json")
+    try:
         with urllib.request.urlopen(req) as resp:
             body = json.loads(resp.read().decode())
-            if not body.get("ok"):
-                raise RuntimeError(f"Telegram error: {body}")
+        return None if body.get("ok") else body.get("description", str(body))
+    except urllib.error.HTTPError as e:
+        try:
+            return json.loads(e.read().decode()).get("description", f"HTTP {e.code}")
+        except (ValueError, OSError):
+            return f"HTTP {e.code}"
+
+
+def send_telegram(text):
+    url = f"{TELEGRAM_BASE}/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    for chunk in chunk_message(text):
+        err = telegram_post(url, chunk, parse_mode="HTML")
+        if err is None:
+            continue
+        # Surface the real reason, then retry the chunk as plain text so a single
+        # formatting edge case never blocks the whole report (and the run marker).
+        print(f"⚠️  Telegram rejected HTML chunk ({err}) — retrying as plain text")
+        err2 = telegram_post(url, html_to_plain(chunk), parse_mode=None)
+        if err2 is not None:
+            raise RuntimeError(
+                f"Telegram send failed — HTML: {err}; plain-text fallback: {err2}"
+            )
 
 
 def main():
