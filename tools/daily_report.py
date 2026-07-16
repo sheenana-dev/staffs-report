@@ -303,11 +303,12 @@ def html_to_plain(html):
     return text.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
 
 
-def telegram_post(url, chunk, parse_mode):
-    """POST one chunk. Returns None on success, or Telegram's error description
-    (read from the response body — that's the actual reason for a 400)."""
+def telegram_post(url, chat_id, chunk, parse_mode):
+    """POST one chunk to chat_id. Returns (ok, description, migrate_to_chat_id).
+    description is Telegram's real error text (from the response body);
+    migrate_to_chat_id is set when the group was upgraded to a supergroup."""
     payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
+        "chat_id": chat_id,
         "text": chunk,
         "disable_web_page_preview": True,
     }
@@ -318,27 +319,39 @@ def telegram_post(url, chunk, parse_mode):
     try:
         with urllib.request.urlopen(req) as resp:
             body = json.loads(resp.read().decode())
-        return None if body.get("ok") else body.get("description", str(body))
     except urllib.error.HTTPError as e:
         try:
-            return json.loads(e.read().decode()).get("description", f"HTTP {e.code}")
+            body = json.loads(e.read().decode())
         except (ValueError, OSError):
-            return f"HTTP {e.code}"
+            return (False, f"HTTP {e.code}", None)
+    if body.get("ok"):
+        return (True, None, None)
+    migrate = (body.get("parameters") or {}).get("migrate_to_chat_id")
+    return (False, body.get("description", str(body)), migrate)
 
 
 def send_telegram(text):
     url = f"{TELEGRAM_BASE}/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    chat_id = TELEGRAM_CHAT_ID
     for chunk in chunk_message(text):
-        err = telegram_post(url, chunk, parse_mode="HTML")
-        if err is None:
+        ok, desc, migrate = telegram_post(url, chat_id, chunk, "HTML")
+        if not ok and migrate:
+            # Group was upgraded to a supergroup, so its id changed. Follow the new
+            # id for the rest of the run and log it so the TELEGRAM_CHAT_ID secret
+            # can be updated (which removes this extra round-trip next time).
+            print(f"ℹ️  Group upgraded to supergroup — new chat_id={migrate}. "
+                  f"Update the TELEGRAM_CHAT_ID secret to {migrate}.")
+            chat_id = str(migrate)
+            ok, desc, _ = telegram_post(url, chat_id, chunk, "HTML")
+        if ok:
             continue
-        # Surface the real reason, then retry the chunk as plain text so a single
+        # Not a migration — surface the reason and retry as plain text so a
         # formatting edge case never blocks the whole report (and the run marker).
-        print(f"⚠️  Telegram rejected HTML chunk ({err}) — retrying as plain text")
-        err2 = telegram_post(url, html_to_plain(chunk), parse_mode=None)
-        if err2 is not None:
+        print(f"⚠️  Telegram rejected HTML chunk ({desc}) — retrying as plain text")
+        ok, desc2, _ = telegram_post(url, chat_id, html_to_plain(chunk), None)
+        if not ok:
             raise RuntimeError(
-                f"Telegram send failed — HTML: {err}; plain-text fallback: {err2}"
+                f"Telegram send failed — HTML: {desc}; plain-text fallback: {desc2}"
             )
 
 
