@@ -51,14 +51,20 @@ SALES_LISTS = [
 # Within each salesperson's list, the report surfaces ONLY these ClickUp statuses,
 # in display order — everything else in the list is ignored. Matching is
 # case-insensitive on the exact status name. Each status is filtered to the report
-# day via `date_field`: only tasks whose that-timestamp falls on the report date are
-# shown (the day's activity, not the whole standing pipeline). Set date_field to None
-# to show every task currently in the status regardless of date.
+# day via `date_fields`: only tasks whose timestamp falls on the report date are
+# shown (the day's activity, not the whole standing pipeline). Set date_fields to
+# None to show every task currently in the status regardless of date.
 #   Contacted  -> date_updated: the lead was worked/moved that day
 #   Closed Won -> date_closed:  the deal was closed that day
+# date_fields is tried in order; the first one ClickUp has populated dates the
+# task. Closed Won needs the date_updated fallback because ClickUp only sets
+# date_closed for statuses whose *type* is "closed" — and status types are
+# per-list. A list that configures Closed Won as a custom-type status leaves
+# date_closed null forever, which silently drops every closed deal from the
+# report while an identically-named status on another list keeps working.
 SALES_STATUSES = [
-    {"status": "Contacted", "date_field": "date_updated"},
-    {"status": "Closed Won", "date_field": "date_closed"},
+    {"status": "Contacted", "date_fields": ("date_updated",)},
+    {"status": "Closed Won", "date_fields": ("date_closed", "date_updated")},
 ]
 
 
@@ -188,16 +194,31 @@ def escape_html(s):
     )
 
 
-def sales_status_match(task, status_cfg, today_start_ms, today_end_ms):
+def task_timestamp(task, date_fields):
+    """First populated timestamp among date_fields, in epoch ms. None if the task
+    carries none of them — an unset field is null, not absent, so this cannot be
+    a plain task.get()."""
+    for field in date_fields:
+        try:
+            return int(task.get(field))
+        except (ValueError, TypeError):
+            continue
+    return None
+
+
+def in_status(task, status_cfg):
     name = ((task.get("status") or {}).get("status") or "").strip().lower()
-    if name != status_cfg["status"].strip().lower():
+    return name == status_cfg["status"].strip().lower()
+
+
+def sales_status_match(task, status_cfg, today_start_ms, today_end_ms):
+    if not in_status(task, status_cfg):
         return False
-    date_field = status_cfg.get("date_field")
-    if not date_field:
+    date_fields = status_cfg.get("date_fields")
+    if not date_fields:
         return True  # no date filter — show all tasks currently in this status
-    try:
-        ts = int(task.get(date_field))
-    except (ValueError, TypeError):
+    ts = task_timestamp(task, date_fields)
+    if ts is None:
         return False
     return today_start_ms <= ts < today_end_ms
 
@@ -214,18 +235,16 @@ def status_breakdown(tasks):
 def last_activity_pht(tasks, status_cfg):
     """Newest report-relevant timestamp among tasks currently in status_cfg, as a
     PHT string. Distinguishes 'wrong status' from 'right status, wrong day'."""
-    field = status_cfg.get("date_field")
-    if not field:
+    date_fields = status_cfg.get("date_fields")
+    if not date_fields:
         return None
-    wanted = status_cfg["status"].strip().lower()
-    stamps = []
-    for task in tasks:
-        if ((task.get("status") or {}).get("status") or "").strip().lower() != wanted:
-            continue
-        try:
-            stamps.append(int(task.get(field)))
-        except (ValueError, TypeError):
-            continue
+    stamps = [
+        ts
+        for task in tasks
+        if in_status(task, status_cfg)
+        for ts in [task_timestamp(task, date_fields)]
+        if ts is not None
+    ]
     if not stamps:
         return None
     newest = datetime.fromtimestamp(max(stamps) / 1000, PHT)
@@ -250,7 +269,8 @@ def explain_empty_section(label, tasks):
         if seen_at:
             warn(
                 f"Sales — {label}: newest '{status_cfg['status']}' activity by "
-                f"{status_cfg['date_field']} was {seen_at} — outside the report day."
+                f"{'/'.join(status_cfg['date_fields'])} was {seen_at} — outside "
+                f"the report day."
             )
 
 
