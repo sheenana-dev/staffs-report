@@ -62,6 +62,13 @@ SALES_STATUSES = [
 ]
 
 
+def warn(msg):
+    """Surface a problem in the run log without failing the run. An empty section
+    is otherwise indistinguishable from a genuinely quiet day — that ambiguity hid
+    a blank Sales section for nine weekdays in Aug 2026 before anyone noticed."""
+    print(f"⚠️  {msg}")
+
+
 def clickup_get(endpoint):
     url = f"{CLICKUP_BASE}{endpoint}"
     req = urllib.request.Request(url)
@@ -158,7 +165,8 @@ def collect_department_report(dept_name, space_id, today_start_ms, today_end_ms)
     for lst in get_lists_in_space(space_id):
         try:
             tasks = get_tasks_in_list(lst["id"])
-        except urllib.error.HTTPError:
+        except urllib.error.HTTPError as e:
+            warn(f"{dept_name}: skipped list '{lst['name']}' ({lst['id']}) — HTTP {e.code}")
             continue
         for task in tasks:
             bucket = classify(task, today_start_ms, today_end_ms)
@@ -194,6 +202,82 @@ def sales_status_match(task, status_cfg, today_start_ms, today_end_ms):
     return today_start_ms <= ts < today_end_ms
 
 
+def status_breakdown(tasks):
+    """Count tasks by their current ClickUp status name, most common first."""
+    seen = {}
+    for task in tasks:
+        name = ((task.get("status") or {}).get("status") or "?").strip() or "?"
+        seen[name] = seen.get(name, 0) + 1
+    return sorted(seen.items(), key=lambda kv: (-kv[1], kv[0]))
+
+
+def last_activity_pht(tasks, status_cfg):
+    """Newest report-relevant timestamp among tasks currently in status_cfg, as a
+    PHT string. Distinguishes 'wrong status' from 'right status, wrong day'."""
+    field = status_cfg.get("date_field")
+    if not field:
+        return None
+    wanted = status_cfg["status"].strip().lower()
+    stamps = []
+    for task in tasks:
+        if ((task.get("status") or {}).get("status") or "").strip().lower() != wanted:
+            continue
+        try:
+            stamps.append(int(task.get(field)))
+        except (ValueError, TypeError):
+            continue
+    if not stamps:
+        return None
+    newest = datetime.fromtimestamp(max(stamps) / 1000, PHT)
+    return f"{newest:%Y-%m-%d %H:%M} PHT"
+
+
+def explain_empty_section(label, tasks):
+    """Say why a salesperson's section came out empty, so a status rename or a
+    lead parked in an unreported status is visible in the log instead of looking
+    like a quiet day."""
+    if not tasks:
+        warn(f"Sales — {label}: list has 0 tasks.")
+        return
+    breakdown = ", ".join(f"{n} ({c})" for n, c in status_breakdown(tasks))
+    wanted = ", ".join(s["status"] for s in SALES_STATUSES)
+    warn(
+        f"Sales — {label}: none of {len(tasks)} tasks matched [{wanted}] for the "
+        f"report day. Statuses present: {breakdown}"
+    )
+    for status_cfg in SALES_STATUSES:
+        seen_at = last_activity_pht(tasks, status_cfg)
+        if seen_at:
+            warn(
+                f"Sales — {label}: newest '{status_cfg['status']}' activity by "
+                f"{status_cfg['date_field']} was {seen_at} — outside the report day."
+            )
+
+
+def match_list_tasks(lst, today_start_ms, today_end_ms):
+    """Bucket one salesperson list's tasks by reported status.
+    Returns (buckets_by_status, all_tasks)."""
+    tasks = get_tasks_in_list(lst["id"])
+    matches = {s["status"]: [] for s in SALES_STATUSES}
+    for task in tasks:
+        for status_cfg in SALES_STATUSES:
+            if sales_status_match(task, status_cfg, today_start_ms, today_end_ms):
+                matches[status_cfg["status"]].append(task_entry(task, lst["name"]))
+                break
+    return matches, tasks
+
+
+def warn_unresolved_lists(matched_lists):
+    """A configured salesperson whose list never turned up in the Sales space —
+    renamed or deleted — otherwise reports as a permanently quiet day."""
+    for mapping in SALES_LISTS:
+        if mapping["label"] not in matched_lists:
+            warn(
+                f"Sales — {mapping['label']}: no list named '{mapping['list']}' in the "
+                f"Sales space — renamed or deleted? Section will be empty."
+            )
+
+
 def collect_sales_sections(space_id, today_start_ms, today_end_ms):
     """One section per salesperson (matched by ClickUp list name), each showing
     only the configured statuses (Contacted, Closed Won) as separate buckets.
@@ -205,21 +289,27 @@ def collect_sales_sections(space_id, today_start_ms, today_end_ms):
     buckets = {
         m["label"]: {s["status"]: [] for s in SALES_STATUSES} for m in SALES_LISTS
     }
+    matched_lists, unmapped = {}, []
     for lst in get_lists_in_space(space_id):
         label = label_for.get(norm(lst["name"]))
         if label is None:
+            unmapped.append(f"'{lst['name']}' ({lst['id']})")
             continue
+        where = f"'{lst['name']}' ({lst['id']})"
+        matched_lists[label] = where
         try:
-            tasks = get_tasks_in_list(lst["id"])
-        except urllib.error.HTTPError:
+            matches, tasks = match_list_tasks(lst, today_start_ms, today_end_ms)
+        except urllib.error.HTTPError as e:
+            warn(f"Sales — {label}: skipped list {where} — HTTP {e.code}")
             continue
-        for task in tasks:
-            for status_cfg in SALES_STATUSES:
-                if sales_status_match(task, status_cfg, today_start_ms, today_end_ms):
-                    buckets[label][status_cfg["status"]].append(
-                        task_entry(task, lst["name"])
-                    )
-                    break
+        buckets[label] = matches
+        found = sum(len(v) for v in matches.values())
+        print(f"  Sales — {label}: list {where}, {len(tasks)} tasks, {found} reportable")
+        if not found:
+            explain_empty_section(label, tasks)
+    warn_unresolved_lists(matched_lists)
+    if unmapped:
+        print(f"  Sales: ignored unmapped lists — {', '.join(unmapped)}")
     return [
         (
             f"Sales — {m['label']}",
